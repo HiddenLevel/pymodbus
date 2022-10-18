@@ -1,0 +1,18 @@
+[Unit]
+Description=Modbus device simulator
+After=multi-user.target
+
+[Service]
+#Type=forking
+User=jani
+Require=network.target
+Restart=on-failure
+RestartSec=30s
+StartLimitInterval=500
+
+ExecStart=/home/jani/run_server/server_simulator.py --port 5020 --log debug --json /home/jani/run_server/Simulator_UMG804.json
+StandardOutput=append:/home/jani/run_server/run.log
+StandardError=append:/home/jani/run_server/run.log
+
+[Install]
+WantedBy=multi-user.target
