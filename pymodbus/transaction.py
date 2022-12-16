@@ -17,6 +17,7 @@ from pymodbus.framer.ascii_framer import ModbusAsciiFramer
 from pymodbus.framer.binary_framer import ModbusBinaryFramer
 from pymodbus.framer.rtu_framer import ModbusRtuFramer
 from pymodbus.framer.socket_framer import ModbusSocketFramer
+from pymodbus.framer.socket_framer import NumatoModbusSocketFramer
 from pymodbus.framer.tls_framer import ModbusTlsFramer
 from pymodbus.utilities import ModbusTransactionState, hexlify_packets
 
@@ -344,12 +345,46 @@ class ModbusTransactionManager:
         return self.client.framer.sendPacket(packet)
 
     def _recv(self, expected_response_length, full):  # pylint: disable=too-complex
-        """Receive."""
+        """Receive.
+
+        This socket framer is identical to the ModbusSocketFramer. The named
+        framer class only serves to distinguish the difference between a normal
+        Modbus TCP device and a Numato Modbus TCP device. It didn't seem
+        necessary to modify any of the existing framer classes to  achieve the
+        modifications desired.
+
+        The device this socket framer is designed for is the:
+        Numato Modbus 64 pin GPIO Prodigy ZGX64
+
+        It was determined through testing that the ZGX64 does NOT implement the
+        TCP Modbus protocol correctly. During a TCP packet send/receive, the
+        received MBAP header from the device will be an identical MBAP header
+        to the header that was sent in the send request. Since the device
+        appears to relay the MBAP header instead of writing a new one,
+        the length field for the received packet will be always be incorrect,
+        causing the TCP framer to raise an exception.
+
+        The modbus packet itself, will include the proper length of the data
+        received. A modification was made into the recv function:
+        pymodbus.transaction._recv, that when a NumatoModbusSocketFramer framer
+        is used, the function will read further than the MBAP header, into the
+        modbus packet itself and retrieve the data length identifier from there
+        instead of from the MBAP header. It will then correct the length field
+        in the MBAP header to the actual expected length allowing the modbus
+        packet data to be properly parsed without error.
+
+        """
         total = None
         if not full:
             exception_length = self._calculate_exception_length()
             if isinstance(self.client.framer, ModbusSocketFramer):
-                min_size = 8
+                if isinstance(self.client.framer, NumatoModbusSocketFramer):
+                    # for a numato modbus device, we want to reach a little
+                    # further than the MBAP header, into the modbus packet
+                    # itself to reach the data length entry.
+                    min_size = 9
+                else:
+                    min_size = 8
             elif isinstance(self.client.framer, ModbusRtuFramer):
                 min_size = 4
             elif isinstance(self.client.framer, ModbusAsciiFramer):
@@ -384,7 +419,23 @@ class ModbusTransactionManager:
                         h_size = (
                             self.client.framer._hsize  # pylint: disable=protected-access
                         )
-                        length = struct.unpack(">H", read_min[4:6])[0] - 1
+                        if isinstance(self.client.framer,
+                                      NumatoModbusSocketFramer):
+                            # here we will reach into the actual modbus packet,
+                            # get the correct data length, then inject the
+                            # correct length into the MBAP length field.
+                            _logger.debug(
+                                "Original MBAP header: %s",
+                                ''.join('{} '.format(hex(x)) for x in read_min))
+                            length = struct.unpack(">B", read_min[8:])[0] + 2
+                            temp = bytearray(read_min)
+                            temp[5:6] = (length + 1).to_bytes(1, 'little')
+                            read_min = bytes(temp)
+                            _logger.debug(
+                                "Corrected MBAP header: %s",
+                                ''.join('{} '.format(hex(x)) for x in read_min))
+                        else:
+                            length = struct.unpack(">H", read_min[4:6])[0] - 1
                         expected_response_length = h_size + length
                     elif expected_response_length is None and isinstance(
                         self.client.framer, ModbusRtuFramer

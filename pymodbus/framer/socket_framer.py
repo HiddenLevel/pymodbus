@@ -235,4 +235,40 @@ class ModbusSocketFramer(ModbusFramer):
         return packet
 
 
+class NumatoModbusSocketFramer(ModbusSocketFramer):
+    """Socket framer for Numato Modbus TCP device.
+
+    This socket framer is identical to the ModbusSocketFramer. The named
+    framer class only serves to distinguish the difference between a normal
+    Modbus TCP device and a Numato Modbus TCP device. It didn't seem
+    necessary to modify any of the existing framer classes to  achieve the
+    modifications desired.
+
+    The device this socket framer is designed for is the:
+    Numato Modbus 64 pin GPIO Prodigy ZGX64
+
+    It was determined through testing that the ZGX64 does NOT implement the
+    TCP Modbus protocol correctly. During a TCP packet send/receive, the
+    received MBAP header from the device will be an identical MBAP header
+    to the header that was sent in the send request. Since the device appears
+    to relay the MBAP header instead of writing a new one, the length field
+    for the received packet will be always be incorrect, causing the TCP framer
+    to raise an exception.
+
+    The modbus packet itself, will include the proper length of the data
+    received. A modification was made into the recv function:
+    pymodbus.transaction._recv, that when a NumatoModbusSocketFramer framer is
+    used, the function will read further than the MBAP header, into the
+    modbus packet itself and retrieve the data length identifier from there
+    instead of from the MBAP header. It will then correct the length field
+    in the MBAP header to the actual expected length allowing the modbus
+    packet data to be properly parsed without error.
+
+    """
+
+    def __init__(self, decoder, client=None):
+        """NumatoModbusFramer Object Constructor"""
+        super().__init__(decoder=decoder,
+                         client=client)
+
 # __END__
